@@ -29,6 +29,17 @@
 
 </div>
 
+> [!NOTE]
+> **Linux 포크입니다.** 이 포크([nonbanana/ego-linux](https://github.com/nonbanana/ego-linux))는 ego lite 앱 없이 Linux에서 `ego-browser`를 실행합니다. SDK가 DevTools 프로토콜로 로컬 Google Chrome 또는 Chromium을 조작하고, 함께 들어 있는 확장이 task space를 탭 그룹으로 보여 주며 넘기기 알림을 띄웁니다. 에이전트는 전용 Chrome 프로필을 쓰므로 사이트에는 그 프로필에서 한 번 로그인해야 합니다.
+>
+> ```bash
+> cd package/ego-browser && npm ci && npm run build
+> ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
+> ```
+>
+> Node.js 22 이상, Chrome 또는 Chromium, 그리고 `wl-clipboard`(Wayland) 또는 `xclip`(X11)이 필요합니다. 자세한 내용과 주의 사항은 [Linux 설치 안내](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome)를 참고하시기 바랍니다.
+
+
 ego (lite)는 사용자와 AI 에이전트가 나란히 작업할 수 있는 브라우저입니다. 에이전트가 각자에게 따로 주어지는 작업 공간인 Space에서 여러 브라우저 작업을 수행하는 동안, 사용자는 자신만의 Space에서 자유롭게 웹을 탐색할 수 있으며, 에이전트가 브라우저의 제어권을 빼앗는 일은 없습니다. 게다가 웹 자동화 작업은 더 빠르게 끝나고 토큰도 더 적게 씁니다.
 
 browser-use나 agent-browser 같은 기존 도구는 그 자체가 브라우저가 아니라 다른 브라우저로 이어 주는 다리 역할을 할 뿐입니다. 그래서 구동할 별도 브라우저가 필요하고, 브라우저 데이터는 그대로 넘어오지 않으며, 연결도 불안정하고, 결국 사용자와 에이전트가 브라우저의 제어권을 두고 다투게 됩니다. ego lite는 처음부터 사용자와 에이전트가 함께 쓰도록 설계된 브라우저입니다. 별도 설정 없이도 에이전트는 `ego-browser`를 통해 언제든 실제 로그인 상태와 탭에 접근할 수 있습니다.

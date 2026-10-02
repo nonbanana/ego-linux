@@ -29,6 +29,16 @@
 
 </div>
 
+> [!NOTE]
+> **Linux fork.** This fork ([nonbanana/ego-linux](https://github.com/nonbanana/ego-linux)) runs `ego-browser` on Linux without the ego lite app: the SDK drives a local Google Chrome or Chromium through the DevTools protocol, and a bundled extension shows each task space as a tab group with handoff notifications. Agents use a dedicated Chrome profile, so sign in to sites there once.
+>
+> ```bash
+> cd package/ego-browser && npm ci && npm run build
+> ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
+> ```
+>
+> Requires Node.js 22+, Chrome or Chromium, and `wl-clipboard` (Wayland) or `xclip` (X11). Details and caveats: [Linux install](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome).
+
 ego (lite) is a browser where you and your AI agents work in parallel. Your agents run their browser tasks in their own Spaces, isolated workspaces inside the same browser, while you keep browsing in yours, so no agent ever takes the browser away from you. And the automation itself finishes faster, on fewer tokens.
 
 Existing tools like browser-use and agent-browser are a bridge to the browser, not a browser of their own: they need a separate one to drive, your browser data rarely carries over intact, the connection is unstable, and you and the agent end up fighting over control of the browser. ego lite is one browser designed from the start for the two of you to share. No extra setup, and the agent can always reach your real logins and tabs through `ego-browser`.
