@@ -887,6 +887,8 @@ class HostConnection {
 const REF_MARK = "\u0000";
 const REF_PATTERN = /\u0000(\d+)\u0000/g;
 
+type SnapshotPiece = string | { text: string };
+
 export type FrameTree = {
   nodes: AxNode[];
   frameId?: string;
@@ -1055,27 +1057,61 @@ export function renderAxTree(
     visible: Set<number> | undefined,
   ): string[] => {
     const byId = new Map(tree.nodes.map((node) => [node.nodeId, node]));
-    const render = (
-      node: AxNode | undefined,
+    // Pages often split one sentence across many text nodes (one per word or
+    // even per character), so text stays raw until its rendered parent joins
+    // adjacent runs into a single line.
+    const toLines = (
+      pieces: SnapshotPiece[],
       depth: number,
       parentName: string,
     ): string[] => {
+      const lines: string[] = [];
+      let run = "";
+      const flush = () => {
+        const text = run.replace(/\s+/g, " ").trim();
+        run = "";
+        if (text && text !== parentName) {
+          lines.push(`${"  ".repeat(depth)}text ${JSON.stringify(text)}`);
+        }
+      };
+      for (const piece of pieces) {
+        if (typeof piece === "string") {
+          flush();
+          lines.push(piece);
+        } else {
+          run += piece.text;
+        }
+      }
+      flush();
+      return lines;
+    };
+    const render = (
+      node: AxNode | undefined,
+      depth: number,
+    ): SnapshotPiece[] => {
       if (!node || HIDDEN_ROLES.has(node.role?.value ?? "")) return [];
       const role = roleOf(node);
       const name = nameOf(node);
-      const renderChildren = (childDepth: number, childParentName: string) =>
-        (node.childIds ?? []).flatMap((child) =>
-          render(byId.get(child), childDepth, childParentName),
-        );
-      if (node.ignored) return renderChildren(depth, parentName);
-      if (role === "text" && (name === "" || name === parentName)) return [];
-
       const backendNodeId = node.backendDOMNodeId;
+      const childPieces = (childDepth: number) =>
+        (node.childIds ?? []).flatMap((child) =>
+          render(byId.get(child), childDepth),
+        );
+      if (node.ignored) return childPieces(depth);
+      if (role === "text") {
+        const raw = String(node.name?.value ?? "");
+        const offscreen =
+          visible &&
+          raw.trim() !== "" &&
+          !(backendNodeId !== undefined && visible.has(backendNodeId));
+        return offscreen ? [] : [{ text: raw }];
+      }
+
       const childFrame =
         backendNodeId === undefined
           ? undefined
           : tree.children.get(backendNodeId);
-      const children = renderChildren(depth + 1, name || parentName);
+      const children = toLines(childPieces(depth + 1), depth + 1, name);
       if (
         role !== "root" &&
         visible &&
@@ -1132,7 +1168,7 @@ export function renderAxTree(
         (metadata.length ? ` [${metadata.join(", ")}]` : "");
       return [line, ...children];
     };
-    return render(root, depth, "");
+    return toLines(render(root, depth), depth, "");
   };
 
   let start: { tree: FrameTree; node: AxNode } | undefined;

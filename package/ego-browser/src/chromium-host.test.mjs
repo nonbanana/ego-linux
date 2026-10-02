@@ -176,3 +176,38 @@ test("snapshot root frame hints reach only hosts that accept them", async () => 
     { scope: "subtree", root: 4, rootFrameId: "F" },
   ]);
 });
+
+test("Chrome snapshots join text split across many nodes", () => {
+  const letters = ["H", "i", " ", "t", "h", "e", "r", "e"];
+  const frame = {
+    children: new Map(),
+    nodes: [
+      ax("1", "RootWebArea", "Doc", {
+        childIds: ["2", "9"],
+        backendDOMNodeId: 1,
+      }),
+      ax("2", "paragraph", "", {
+        childIds: letters.map((_, index) => `w${index}`),
+      }),
+      ...letters.map((_, index) =>
+        ax(`w${index}`, "generic", undefined, {
+          ignored: true,
+          childIds: [`t${index}`],
+        }),
+      ),
+      ...letters.map((letter, index) => ax(`t${index}`, "StaticText", letter)),
+      ax("9", "button", "Save", { childIds: ["10"], backendDOMNodeId: 9 }),
+      ax("10", "StaticText", "Save"),
+    ],
+  };
+
+  assert.equal(
+    renderAxTree(frame).content,
+    [
+      'root "Doc"',
+      "  paragraph",
+      '    text "Hi there"',
+      '  button "Save" [ref=1]',
+    ].join("\n"),
+  );
+});
