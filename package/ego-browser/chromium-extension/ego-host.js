@@ -4,8 +4,6 @@
 
 const RETURN_MENU = "ego-return-control";
 const TAKEOVER_MENU = "ego-take-over";
-const HIGHLIGHT_HOLD_MS = 250;
-const HIGHLIGHT_FADE_MS = 350;
 
 // Events reset the service worker idle timer, so the host can always reach it.
 chrome.alarms.create("keepalive", { periodInMinutes: 0.5 });
@@ -47,6 +45,42 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
   chrome.notifications.clear(notificationId);
 });
 
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message?.type !== "ego-overlay-hello") return undefined;
+  overlayState(sender.tab?.windowId).then(respond);
+  return true;
+});
+
+async function overlayState(windowId) {
+  const space = await spaceForWindow(windowId);
+  if (!space) return { ownership: undefined };
+  const { cursors = {} } = await chrome.storage.session.get("cursors");
+  return {
+    ownership: space.ownership,
+    state: space.state,
+    cursor: cursors[windowId],
+  };
+}
+
+async function pushOverlay(tabId, state) {
+  const message = { type: "ego-overlay", state };
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    // Tabs that loaded before the extension have no content script yet.
+    await chrome.scripting
+      .executeScript({ target: { tabId }, files: ["overlay.js"] })
+      .catch(() => {});
+    return chrome.tabs.sendMessage(tabId, message).catch(() => false);
+  }
+}
+
+async function pushWindow(windowId, state) {
+  if (!Number.isInteger(windowId)) return;
+  const tabs = await chrome.tabs.query({ windowId }).catch(() => []);
+  await Promise.all(tabs.map((tab) => pushOverlay(tab.id, state)));
+}
+
 async function spaceForWindow(windowId) {
   const { spaces = [] } = await chrome.storage.local.get("spaces");
   return spaces.find((space) => space.windowId === windowId);
@@ -63,6 +97,7 @@ async function queueAction(space, action, ownership) {
   );
   await chrome.storage.local.set({ actions, spaces: updated });
   await renderSpace({ ...space, ownership });
+  await pushWindow(space.windowId, { ownership });
 }
 
 function groupStyle(space) {
@@ -108,6 +143,19 @@ globalThis.egoHost = {
     await Promise.all(
       spaces.map((space) => renderSpace(space).catch(() => {})),
     );
+    // Not awaited: page overlays catch up on their own and must not slow
+    // every host call down by a paint.
+    for (const space of spaces) {
+      void pushWindow(space.windowId, {
+        ownership: space.ownership,
+        state: space.state,
+      });
+    }
+  },
+
+  /** Hide or restore the overlay in a window; resolves once it is painted. */
+  async setOverlayHidden(windowId, hidden) {
+    await pushWindow(windowId, { hidden });
   },
 
   async notifyHandOff(space) {
@@ -125,26 +173,10 @@ globalThis.egoHost = {
   },
 
   async highlight(windowId, x, y) {
+    const { cursors = {} } = await chrome.storage.session.get("cursors");
+    cursors[windowId] = { x, y, at: Date.now() };
+    await chrome.storage.session.set({ cursors });
     const [tab] = await chrome.tabs.query({ windowId, active: true });
-    if (!tab) return;
-    await chrome.scripting
-      .executeScript({
-        target: { tabId: tab.id },
-        args: [x, y, HIGHLIGHT_HOLD_MS, HIGHLIGHT_FADE_MS],
-        func: (left, top, hold, fade) => {
-          const dot = document.createElement("div");
-          dot.style.cssText =
-            `position:fixed;left:${left - 12}px;top:${top - 12}px;width:24px;height:24px;` +
-            "border-radius:50%;background:rgba(37,99,235,.35);border:2px solid #2563eb;" +
-            `pointer-events:none;z-index:2147483647;transition:transform ${fade}ms,opacity ${fade}ms;`;
-          document.documentElement.append(dot);
-          setTimeout(() => {
-            dot.style.transform = "scale(1.6)";
-            dot.style.opacity = "0";
-          }, hold);
-          setTimeout(() => dot.remove(), hold + fade);
-        },
-      })
-      .catch(() => {});
+    if (tab) void pushOverlay(tab.id, { cursor: cursors[windowId] });
   },
 };

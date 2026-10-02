@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -219,6 +221,31 @@ export function createChromiumEgo(
         windowId,
       })),
     );
+  }
+
+  // CDP sends go through one queue so hiding the overlay before a screenshot
+  // cannot reorder the agent's messages.
+  let sendQueue: Promise<void> = Promise.resolve();
+  const enqueue = (task: () => Promise<void>) => {
+    sendQueue = sendQueue.then(task);
+  };
+  const pendingShots = new Map<number, number>();
+
+  // The agent cursor and frame are for the user, not for the agent's own
+  // screenshots. A failure here only means the overlay may show in the shot.
+  async function setOverlayHidden(windowId: number, hidden: boolean) {
+    await extensionHost()
+      .then((ui) => ui.call("setOverlayHidden", windowId, hidden))
+      .catch(() => {});
+  }
+
+  function revealAfterShot(data: string) {
+    const id = JSON.parse(data).id;
+    const windowId = pendingShots.get(id);
+    if (windowId === undefined) return;
+    pendingShots.delete(id);
+    if ([...pendingShots.values()].includes(windowId)) return;
+    enqueue(() => setOverlayHidden(windowId, false));
   }
 
   async function windowOf(targetId: string): Promise<number | undefined> {
@@ -575,16 +602,30 @@ export function createChromiumEgo(
         });
       }
       channel ??= resolveBrowserUrl().then((url) =>
-        openRawChannel(url, (data) => ego.onCDPMessage?.(data)),
+        openRawChannel(url, (data) => {
+          if (pendingShots.size > 0) revealAfterShot(data);
+          ego.onCDPMessage?.(data);
+        }),
       );
-      channel.then(
-        (socket) => socket.send(message),
-        (error) =>
+      const socketReady = channel;
+      const hideForShot =
+        parsed.method === "Page.captureScreenshot" &&
+        space.windowId !== undefined;
+      enqueue(async () => {
+        try {
+          const socket = await socketReady;
+          if (hideForShot) {
+            pendingShots.set(parsed.id, space.windowId!);
+            await setOverlayHidden(space.windowId!, true);
+          }
+          socket.send(message);
+        } catch (error) {
           ego.onSendCDPMessageError?.(
             String(error?.message || error),
             "EGO_CDP_CHANNEL_UNAVAILABLE",
-          ),
-      );
+          );
+        }
+      });
       return undefined;
     },
 
@@ -638,6 +679,18 @@ type ExtensionHost = {
 async function attachExtension(
   cdp: Pick<HostConnection, "send">,
 ): Promise<ExtensionHost> {
+  if (!existsSync(join(EXTENSION_DIR, "manifest.json"))) {
+    throw new Error(`ego-browser extension not found at ${EXTENSION_DIR}`);
+  }
+  const files = readdirSync(EXTENSION_DIR).sort();
+  const hash = createHash("sha256");
+  for (const file of files)
+    hash.update(file).update(readFileSync(join(EXTENSION_DIR, file)));
+  const build = hash.digest("hex");
+  const { name } = JSON.parse(
+    readFileSync(join(EXTENSION_DIR, "manifest.json"), "utf8"),
+  );
+
   const findWorker = async () => {
     const { targetInfos } = await cdp.send("Target.getTargets");
     return (targetInfos as TargetInfo[]).find(
@@ -658,17 +711,38 @@ async function attachExtension(
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
-
-  let worker = await findWorker();
-  if (!worker) {
-    if (!existsSync(join(EXTENSION_DIR, "manifest.json"))) {
-      throw new Error(`ego-browser extension not found at ${EXTENSION_DIR}`);
-    }
-    const { name } = JSON.parse(
-      readFileSync(join(EXTENSION_DIR, "manifest.json"), "utf8"),
+  const connect = async (worker: TargetInfo) => {
+    const { sessionId } = await cdp.send("Target.attachToTarget", {
+      targetId: worker.targetId,
+      flatten: true,
+    });
+    const evaluate = async (expression: string) => {
+      const { result, exceptionDetails } = await cdp.send(
+        "Runtime.evaluate",
+        { expression, awaitPromise: true, returnByValue: true },
+        sessionId,
+      );
+      if (exceptionDetails) {
+        throw new Error(
+          `ego-browser extension: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`,
+        );
+      }
+      return result.value;
+    };
+    await waitUntil(
+      async () =>
+        (await evaluate("typeof egoHost").catch(() => undefined)) === "object",
+      "worker initialization",
     );
-    // A copy that lost its worker (disabled, or from another checkout) would
-    // not start again on load, so replace it with a fresh install.
+    return evaluate;
+  };
+  const installedBuild = `chrome.storage.local.get("build").then((r) => r.build)`;
+
+  const existing = await findWorker();
+  let evaluate = existing ? await connect(existing) : undefined;
+  if (!evaluate || (await evaluate(installedBuild)) !== build) {
+    // Replace any older, disabled, or other-checkout copy: Chrome neither
+    // restarts a lost worker on load nor reloads changed files by itself.
     const installed = await cdp
       .send("Extensions.getExtensions")
       .catch(() => ({ extensions: [] }));
@@ -687,33 +761,14 @@ async function attachExtension(
           `Could not load the ego-browser extension (${error.message}). Quit the ego-browser Chrome so the next call restarts it with extension debugging enabled.`,
         );
       });
-    worker = await waitUntil(findWorker, "worker startup");
-  }
-  const { sessionId } = await cdp.send("Target.attachToTarget", {
-    targetId: worker.targetId,
-    flatten: true,
-  });
-  const evaluate = async (expression: string) => {
-    const { result, exceptionDetails } = await cdp.send(
-      "Runtime.evaluate",
-      { expression, awaitPromise: true, returnByValue: true },
-      sessionId,
+    evaluate = await connect(await waitUntil(findWorker, "worker startup"));
+    await evaluate(
+      `chrome.storage.local.set({ build: ${JSON.stringify(build)} })`,
     );
-    if (exceptionDetails) {
-      throw new Error(
-        `ego-browser extension: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`,
-      );
-    }
-    return result.value;
-  };
-  await waitUntil(
-    async () =>
-      (await evaluate("typeof egoHost").catch(() => undefined)) === "object",
-    "worker initialization",
-  );
+  }
   return {
-    call: (name, ...args) =>
-      evaluate(`egoHost.${name}(...${JSON.stringify(args)})`),
+    call: (method, ...args) =>
+      evaluate(`egoHost.${method}(...${JSON.stringify(args)})`),
   };
 }
 
