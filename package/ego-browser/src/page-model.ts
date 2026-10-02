@@ -1682,6 +1682,11 @@ class Page {
       const result = await this.#services.snapshot({
         ...snapshotOptions,
         ...(root === undefined ? {} : { root }),
+        ...(rootContext?.frameId !== undefined
+          ? { rootFrameId: rootContext.frameId }
+          : rootContext?.frameProvenance === "page"
+            ? { rootFrameId: "" }
+            : {}),
         scope: snapshotScope,
         includeActionMarks: options.includeActionMarks ?? true,
         includeStableLocator: options.includeStableLocator ?? true,

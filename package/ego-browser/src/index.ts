@@ -16,6 +16,7 @@ import {
   resetSink,
 } from "./output-sink.js";
 import { runMain } from "./run.js";
+import { createChromiumEgo } from "./chromium-host.js";
 import { installStaleEgoBrowserGuard } from "./skill-migration.js";
 import { emitUpdateNotice } from "./update-notice.js";
 import { installPageContextGuard } from "./page-context-guard.js";
@@ -120,28 +121,22 @@ export function installEgoSdk(
     });
     target.ego.helpers = installed;
     target.ego.learnings = {};
-    if (!(target.ego as Record<symbol, unknown>)[EGO_WRAPPED]) {
-      const taskSelection: { spaceId?: unknown } = {};
-      wrapCreateTab(target.ego);
-      wrapUseTaskSpace(target.ego, taskSelection);
-      wrapInvalidating(
-        target.ego,
-        ["closeTaskSpace", "createTaskSpace", "claimTaskSpace"],
-        () => {
-          taskSelection.spaceId = undefined;
-        },
-      );
-      Object.defineProperty(target.ego, EGO_WRAPPED, {
-        value: true,
-        enumerable: false,
-      });
-    }
+    wrapEgoRuntime(target.ego);
     exposeEgoMethods(target, target.ego);
   }
   return target;
 }
 
 if (isDirectCli()) {
+  // Without an Ego Lite host on Linux, drive a local Chrome directly.
+  const chromium =
+    !globalThis.ego && process.platform === "linux"
+      ? createChromiumEgo()
+      : undefined;
+  if (chromium) {
+    wrapEgoRuntime(chromium);
+    globalThis.ego = chromium;
+  }
   try {
     process.exitCode = await runMain();
   } catch (error) {
@@ -149,6 +144,7 @@ if (isDirectCli()) {
     process.exitCode = 1;
   } finally {
     disposeDownloadArtifacts();
+    chromium?.close();
   }
 } else {
   installEgoSdk();
@@ -193,6 +189,24 @@ function wrapInvalidating(
       return result;
     };
   }
+}
+
+function wrapEgoRuntime(ego: EgoRuntime) {
+  if ((ego as Record<symbol, unknown>)[EGO_WRAPPED]) return;
+  const taskSelection: { spaceId?: unknown } = {};
+  wrapCreateTab(ego);
+  wrapUseTaskSpace(ego, taskSelection);
+  wrapInvalidating(
+    ego,
+    ["closeTaskSpace", "createTaskSpace", "claimTaskSpace"],
+    () => {
+      taskSelection.spaceId = undefined;
+    },
+  );
+  Object.defineProperty(ego, EGO_WRAPPED, {
+    value: true,
+    enumerable: false,
+  });
 }
 
 function wrapUseTaskSpace(ego: EgoRuntime, selection: { spaceId?: unknown }) {

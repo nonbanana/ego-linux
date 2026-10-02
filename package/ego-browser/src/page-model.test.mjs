@@ -2054,6 +2054,7 @@ test("snapshot defaults to the viewport, reports its source, and validates optio
     assert.deepEqual(fixture.snapshotOptions.at(-1), {
       scope: "subtree",
       root: 21,
+      rootFrameId: "",
       includeActionMarks: true,
       includeStableLocator: true,
     });
@@ -2455,6 +2456,7 @@ test("subtree snapshot resolves its root in the addressed Page", async () => {
     assert.deepEqual(fixture.snapshotOptions.at(-1), {
       scope: "subtree",
       root: 21,
+      rootFrameId: "",
       includeActionMarks: true,
       includeStableLocator: true,
     });

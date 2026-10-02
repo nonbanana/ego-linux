@@ -62,6 +62,9 @@ The suite builds the current worktree and automatically runs it through the
 Ego Lite CLI with `--sdk-path`. On macOS it prefers the app's stable
 `Versions/Current` helper path, so another installed Ego product cannot silently
 take over the test. Set `EGO_BROWSER_REAL_E2E_CLI` to use another installation.
+On Linux it uses the `ego-browser` on the PATH; link
+`scripts/ego-browser-linux.sh` there to run the suite against a local Chrome
+(see `skills/ego-browser/references/install.md`).
 This is the preferred end-to-end compatibility check. `npm test` remains useful
 for repository tests but does not replace the real-browser check.
 

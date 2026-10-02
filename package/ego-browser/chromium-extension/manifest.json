@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "ego-browser task spaces",
+  "description": "Shows agent task-space state and lets the user take over or return control.",
+  "version": "1.0.0",
+  "background": { "service_worker": "ego-host.js" },
+  "permissions": [
+    "alarms",
+    "contextMenus",
+    "notifications",
+    "scripting",
+    "storage",
+    "tabGroups",
+    "tabs"
+  ],
+  "host_permissions": ["<all_urls>"]
+}

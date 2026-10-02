@@ -30,6 +30,41 @@ After the script opens the ego lite app, the user completes the first-run onboar
 
 Onboarding is a step the user completes in the GUI. After the script opens ego lite, wait for the user to confirm they've finished onboarding before continuing.
 
+## Linux: run against a local Chrome
+
+There is no ego lite build for Linux. Instead, the SDK built from the
+[ego-browser repository](https://github.com/citrolabs/ego-lite) drives a local
+Google Chrome or Chromium through the DevTools protocol. Task spaces open as
+separate windows in a dedicated Chrome profile under
+`~/.local/share/ego-browser` (override with `EGO_BROWSER_DATA_DIR`), so sign in
+to sites in that profile once.
+
+Requirements: Node.js 22+, `google-chrome-stable`, `google-chrome`, `chromium`,
+or `chromium-browser` on the PATH (or set `EGO_BROWSER_CHROME`), and
+`wl-clipboard` (Wayland) or `xclip` (X11) for `keyboard.paste()`.
+
+```bash
+cd package/ego-browser
+npm ci
+npm run build
+mkdir -p ~/.local/bin
+ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
+```
+
+The first browser call starts Chrome and keeps it running for later
+invocations. Rebuild after pulling changes; the link always runs the current
+build.
+
+A bundled extension shows each task space as a tab group: blue with the agent's
+current step while it works, orange when the task is handed to the user. A
+handoff also raises a desktop notification. Right-click any page in the space
+and choose **Return control to the agent** when done, or **Take over from the
+agent** to interrupt it.
+
+Chrome's DevTools port listens on `127.0.0.1` without authentication, so any
+process of any local user can control this browser profile. Use it on a
+single-user machine.
+
 ## After installing: confirm `ego-browser` is available
 
 Once the user has finished onboarding, confirm the command is ready:
@@ -61,7 +96,7 @@ Once the environment is ready, return to the user's original task and continue w
 
 ## Troubleshooting
 
-- **Not macOS**: the script supports macOS only (`uname -s` is `Darwin`). On other platforms, have the user download and install from the ego lite website at https://lite.ego.app/.
+- **Not macOS**: the script supports macOS only (`uname -s` is `Darwin`). On Linux, follow the Linux section above. On other platforms, have the user download and install from the ego lite website at https://lite.ego.app/.
 - **Download failed**: the script retries 3 times automatically; if it still fails, it's usually a network issue — have the user check their network and retry.
 - **Gatekeeper still blocks it**: the script already tries to strip quarantine; if the first launch is still blocked, have the user allow ego lite manually under System Settings → Privacy & Security.
 - **Command still unavailable after onboarding**: confirm `~/.local/bin` is on the PATH (see above); or have the user reopen ego lite, finish onboarding, and retry.

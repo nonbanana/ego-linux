@@ -24,6 +24,8 @@ import {
 export type SnapshotOptions = {
   scope?: "only_within_viewport" | "full_page" | "subtree";
   root?: number;
+  // Frame owning `root` ("" for the top document); only for hosts that accept it.
+  rootFrameId?: string;
   includeActionMarks?: boolean;
   includeStableLocator?: boolean;
 };
@@ -51,8 +53,10 @@ export async function drainEvents() {
 }
 
 export async function snapshot(options: SnapshotOptions = {}) {
+  const ego = browserEgo();
+  const { rootFrameId, ...nativeOptions } = options;
   const result: any = await invokeEgo("snapshot", () =>
-    browserEgo().snapshot(options),
+    ego.snapshot(ego.acceptsSnapshotRootFrameId ? options : nativeOptions),
   );
   compactSnapshotResult(result);
   browserSnapshotRefsToRefMap(browserRefMap, result.refs || []);
