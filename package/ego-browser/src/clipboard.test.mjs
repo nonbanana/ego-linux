@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  beginLinuxClipboardTransaction,
   ClipboardRestoreError,
   withTemporaryClipboardContent,
   withTemporaryClipboardText,
@@ -166,4 +167,95 @@ test("clipboard transactions are serialized within one runtime", async () => {
     "action:second",
     "finish:second",
   ]);
+});
+
+function fakeLinuxClipboard(initial) {
+  let owner = initial;
+  const calls = [];
+  const run = async (command, args, input) => {
+    calls.push([command, ...args]);
+    const type = args[args.indexOf(command === "xclip" ? "-t" : "--type") + 1];
+    if (args.includes("--list-types") || type === "TARGETS") {
+      if (!owner) throw new Error("Nothing is copied");
+      return Buffer.from(Object.keys(owner).join("\n") + "\n");
+    }
+    if (args.includes("--clear")) {
+      owner = undefined;
+      return Buffer.alloc(0);
+    }
+    if (input !== undefined) {
+      owner = { [type]: Buffer.from(input) };
+      return Buffer.alloc(0);
+    }
+    if (!owner?.[type]) throw new Error(`No suitable type: ${type}`);
+    return owner[type];
+  };
+  return { run, calls, current: () => owner };
+}
+
+test("Linux paste restores the plain-text representation of the user's clipboard", async () => {
+  const clipboard = fakeLinuxClipboard({
+    "chromium/x-web-custom-data": Buffer.from("internal"),
+    "text/html": Buffer.from("<b>user</b>"),
+    "text/plain": Buffer.from("user"),
+  });
+  let pasted;
+
+  await withTemporaryClipboardText(
+    "temporary",
+    async () => {
+      pasted = clipboard.current()["text/plain"].toString();
+    },
+    {
+      beginTransaction: (content) =>
+        beginLinuxClipboardTransaction(content, {
+          env: { WAYLAND_DISPLAY: "wayland-0" },
+          run: clipboard.run,
+        }),
+    },
+  );
+
+  assert.equal(pasted, "temporary");
+  assert.deepEqual(Object.keys(clipboard.current()), ["text/plain"]);
+  assert.equal(clipboard.current()["text/plain"].toString(), "user");
+});
+
+test("Linux paste offers HTML content and clears an initially empty clipboard", async () => {
+  const clipboard = fakeLinuxClipboard(undefined);
+  const transaction = await beginLinuxClipboardTransaction(
+    { text: "A", html: "<b>A</b>" },
+    { env: { WAYLAND_DISPLAY: "wayland-0" }, run: clipboard.run },
+  );
+
+  assert.equal(clipboard.current()["text/html"].toString(), "<b>A</b>");
+  assert.equal(await transaction.finish(), "restored");
+  assert.equal(clipboard.current(), undefined);
+});
+
+test("Linux paste leaves a clipboard changed by another process alone", async () => {
+  const clipboard = fakeLinuxClipboard({ UTF8_STRING: Buffer.from("user") });
+  const run = clipboard.run;
+  const transaction = await beginLinuxClipboardTransaction("temporary", {
+    env: { DISPLAY: ":0" },
+    run,
+  });
+  await run(
+    "xclip",
+    ["-selection", "clipboard", "-t", "UTF8_STRING", "-i"],
+    "other",
+  );
+
+  assert.equal(await transaction.finish(), "changed");
+  assert.equal(clipboard.current().UTF8_STRING.toString(), "other");
+});
+
+test("Linux paste fails loudly without a display", async () => {
+  await assert.rejects(
+    () =>
+      beginLinuxClipboardTransaction("x", {
+        env: {},
+        run: async () => Buffer.alloc(0),
+      }),
+    /requires a Wayland or X11 display/,
+  );
 });

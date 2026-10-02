@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { Writable } from "node:stream";
 
 export type ClipboardTransactionStatus = "restored" | "changed";
@@ -39,7 +39,7 @@ export class ClipboardRestoreError extends Error {
 let transactionQueue: Promise<void> = Promise.resolve();
 
 /**
- * Run one action while the macOS clipboard temporarily contains `text`.
+ * Run one action while the system clipboard temporarily contains `text`.
  * Transactions are serialized within the process because the pasteboard is a
  * single user resource shared by every Page.
  */
@@ -62,7 +62,10 @@ export async function withTemporaryClipboardText<T>(
 
   try {
     const beginTransaction =
-      options.beginTransaction ?? beginDarwinClipboardTransaction;
+      options.beginTransaction ??
+      (process.platform === "linux"
+        ? beginLinuxClipboardTransaction
+        : beginDarwinClipboardTransaction);
     const transaction = await beginTransaction(content);
     let value!: T;
     let actionError: unknown;
@@ -116,7 +119,7 @@ async function beginDarwinClipboardTransaction(
 ): Promise<ClipboardTransaction> {
   if (process.platform !== "darwin") {
     throw new Error(
-      "page.keyboard.paste currently requires macOS clipboard support",
+      "page.keyboard.paste currently requires macOS or Linux clipboard support",
     );
   }
 
@@ -168,6 +171,208 @@ async function beginDarwinClipboardTransaction(
       );
     },
   };
+}
+
+type ClipboardCommandRunner = (
+  command: string,
+  args: string[],
+  input?: string | Buffer,
+) => Promise<Buffer>;
+
+type LinuxClipboardOptions = {
+  env?: NodeJS.ProcessEnv;
+  run?: ClipboardCommandRunner;
+};
+
+const X11_META_TARGETS = new Set([
+  "TARGETS",
+  "TIMESTAMP",
+  "MULTIPLE",
+  "SAVE_TARGETS",
+  "DELETE",
+  "INCR",
+]);
+const PREFERRED_RESTORE_TYPES = [
+  "text/plain;charset=utf-8",
+  "UTF8_STRING",
+  "text/plain",
+];
+
+/**
+ * wl-copy and xclip offer a single MIME type, so only one representation of
+ * the user's clipboard is restored and `{ text, html }` is offered as HTML.
+ */
+// ponytail: no cross-process lock like the macOS host; concurrent ego-browser
+// processes can interleave pastes. Add a lock file if that shows up in practice.
+export async function beginLinuxClipboardTransaction(
+  input: ClipboardInput,
+  { env = process.env, run = runClipboardCommand }: LinuxClipboardOptions = {},
+): Promise<ClipboardTransaction> {
+  const tool = linuxClipboardTool(env, run);
+  const content = typeof input === "string" ? { text: input } : input;
+  const temporary =
+    content.html === undefined
+      ? { type: tool.textType, data: Buffer.from(content.text) }
+      : { type: "text/html", data: Buffer.from(content.html) };
+
+  const types = await tool.list();
+  const savedType =
+    PREFERRED_RESTORE_TYPES.find((type) => types.includes(type)) ??
+    types.find((type) => !X11_META_TARGETS.has(type));
+  const saved =
+    savedType === undefined
+      ? undefined
+      : { type: savedType, data: await tool.read(savedType) };
+
+  await tool.write(temporary.type, temporary.data);
+  // wl-copy and xclip take ownership in a forked child after the parent exits,
+  // so a paste sent immediately can still read the previous clipboard.
+  const deadline = Date.now() + 2000;
+  while (
+    !(await tool.read(temporary.type).catch(() => undefined))?.equals(
+      temporary.data,
+    )
+  ) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `the clipboard did not take the temporary ${temporary.type} content`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  let finished = false;
+  return {
+    async finish() {
+      if (finished) throw new Error("clipboard transaction already finished");
+      finished = true;
+      const current = await tool.read(temporary.type).catch(() => undefined);
+      if (!current?.equals(temporary.data)) return "changed";
+      if (saved) await tool.write(saved.type, saved.data);
+      else await tool.clear();
+      return "restored";
+    },
+  };
+}
+
+function linuxClipboardTool(
+  env: NodeJS.ProcessEnv,
+  run: ClipboardCommandRunner,
+) {
+  if (env.WAYLAND_DISPLAY) {
+    return {
+      textType: "text/plain",
+      async list() {
+        try {
+          return splitLines(await run("wl-paste", ["--list-types"]));
+        } catch (error) {
+          if (/nothing is copied|no selection/i.test(String(error))) return [];
+          throw error;
+        }
+      },
+      read: (type: string) => run("wl-paste", ["--no-newline", "--type", type]),
+      write: async (type: string, data: Buffer) => {
+        await run("wl-copy", ["--type", type], data);
+      },
+      clear: async () => {
+        await run("wl-copy", ["--clear"], "");
+      },
+    };
+  }
+  if (env.DISPLAY) {
+    const selection = ["-selection", "clipboard"];
+    const write = async (type: string, data: Buffer) => {
+      await run("xclip", [...selection, "-t", type, "-i"], data);
+    };
+    return {
+      textType: "UTF8_STRING",
+      async list() {
+        try {
+          return splitLines(
+            await run("xclip", [...selection, "-o", "-t", "TARGETS"]),
+          );
+        } catch (error) {
+          if (/no owner for the CLIPBOARD selection/i.test(String(error))) {
+            return [];
+          }
+          throw error;
+        }
+      },
+      read: (type: string) => run("xclip", [...selection, "-o", "-t", type]),
+      write,
+      // xclip cannot release the selection; an empty string is the closest state.
+      clear: () => write("UTF8_STRING", Buffer.alloc(0)),
+    };
+  }
+  throw new Error(
+    "page.keyboard.paste on Linux requires a Wayland or X11 display (WAYLAND_DISPLAY or DISPLAY)",
+  );
+}
+
+function splitLines(output: Buffer): string[] {
+  return output
+    .toString("utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+async function runClipboardCommand(
+  command: string,
+  args: string[],
+  input?: string | Buffer,
+): Promise<Buffer> {
+  if (input === undefined) {
+    return new Promise((resolve, reject) => {
+      execFile(
+        command,
+        args,
+        { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (!error) return resolve(stdout);
+          reject(
+            clipboardCommandError(command, error, stderr.toString("utf8")),
+          );
+        },
+      );
+    });
+  }
+  // wl-copy and xclip fork a background owner that keeps inherited pipes
+  // open, so the output streams must not be piped back to this process.
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    child.once("error", (error) =>
+      reject(clipboardCommandError(command, error)),
+    );
+    // A failed spawn closes stdin early; the exit or error event reports it.
+    child.stdin.on("error", () => {});
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve(Buffer.alloc(0));
+      else
+        reject(
+          new Error(
+            `${command} exited ${signal ? `on ${signal}` : `with code ${code}`}`,
+          ),
+        );
+    });
+    child.stdin.end(input);
+  });
+}
+
+function clipboardCommandError(
+  command: string,
+  error: Error & { code?: string | number | null },
+  stderr = "",
+) {
+  if (error.code === "ENOENT") {
+    return new Error(
+      `${command} is not installed; page.keyboard.paste on Linux requires wl-clipboard (Wayland) or xclip (X11)`,
+      { cause: error },
+    );
+  }
+  return new Error(`${command} failed: ${stderr.trim() || error.message}`, {
+    cause: error,
+  });
 }
 
 function validateClipboardInput(input: ClipboardInput): ClipboardInput {

@@ -279,8 +279,10 @@ click over the intended scrollable area before using it.
 
 On macOS, `keyboard.paste()` sends the native paste shortcut and then restores
 the user's clipboard. Pass `{ text, html }` when a rich editor needs structured
-clipboard content; `text` is the plain-text fallback. On other platforms, use
-`keyboard.insertText()` for plain text.
+clipboard content; `text` is the plain-text fallback. On Linux it needs
+`wl-clipboard` (Wayland) or `xclip` (X11), offers only the HTML of `{ text, html }`,
+and restores one format of the user's clipboard (plain text when present). On other
+platforms, use `keyboard.insertText()` for plain text.
 
 ```js
 await page.keyboard.paste({
