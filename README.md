@@ -35,9 +35,10 @@
 > ```bash
 > cd package/ego-browser && npm ci && npm run build
 > ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
+> mkdir -p ~/.claude/skills && ln -sfn "$(git rev-parse --show-toplevel)/skills/ego-browser" ~/.claude/skills/ego-browser
 > ```
 >
-> Requires Node.js 22+, Chrome or Chromium, and `wl-clipboard` (Wayland) or `xclip` (X11). Details and caveats: [Linux install](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome).
+> The last line adds the skill to Claude Code; link it into other agents' skill folders the same way. Update with `git pull && npm run build`. Requires Node.js 22+, Chrome or Chromium, and `wl-clipboard` (Wayland) or `xclip` (X11). Details and caveats: [Linux install](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome).
 
 ego (lite) is a browser where you and your AI agents work in parallel. Your agents run their browser tasks in their own Spaces, isolated workspaces inside the same browser, while you keep browsing in yours, so no agent ever takes the browser away from you. And the automation itself finishes faster, on fewer tokens.
 

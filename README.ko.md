@@ -35,9 +35,10 @@
 > ```bash
 > cd package/ego-browser && npm ci && npm run build
 > ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
+> mkdir -p ~/.claude/skills && ln -sfn "$(git rev-parse --show-toplevel)/skills/ego-browser" ~/.claude/skills/ego-browser
 > ```
 >
-> Node.js 22 이상, Chrome 또는 Chromium, 그리고 `wl-clipboard`(Wayland) 또는 `xclip`(X11)이 필요합니다. 자세한 내용과 주의 사항은 [Linux 설치 안내](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome)를 참고하시기 바랍니다.
+> 마지막 줄은 Claude Code에 skill을 추가합니다. 다른 에이전트도 같은 방식으로 각자의 skill 폴더에 연결하면 됩니다. 업데이트는 `git pull && npm run build`로 합니다. Node.js 22 이상, Chrome 또는 Chromium, 그리고 `wl-clipboard`(Wayland) 또는 `xclip`(X11)이 필요합니다. 자세한 내용과 주의 사항은 [Linux 설치 안내](skills/ego-browser/references/install.md#linux-run-against-a-local-chrome)를 참고하시기 바랍니다.
 
 
 ego (lite)는 사용자와 AI 에이전트가 나란히 작업할 수 있는 브라우저입니다. 에이전트가 각자에게 따로 주어지는 작업 공간인 Space에서 여러 브라우저 작업을 수행하는 동안, 사용자는 자신만의 Space에서 자유롭게 웹을 탐색할 수 있으며, 에이전트가 브라우저의 제어권을 빼앗는 일은 없습니다. 게다가 웹 자동화 작업은 더 빠르게 끝나고 토큰도 더 적게 씁니다.

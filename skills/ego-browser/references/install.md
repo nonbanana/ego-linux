@@ -51,9 +51,19 @@ mkdir -p ~/.local/bin
 ln -sf "$PWD/scripts/ego-browser-linux.sh" ~/.local/bin/ego-browser
 ```
 
+Link the skill into each agent that should use it. On macOS the ego lite app
+does this; on Linux, run it from the same checkout:
+
+```bash
+skill="$(git rev-parse --show-toplevel)/skills/ego-browser"
+for dir in ~/.claude/skills ~/.codex/skills ~/.agents/skills ~/.config/opencode/skills; do
+  if [ -d "$dir" ]; then ln -sfn "$skill" "$dir/ego-browser"; fi
+done
+```
+
 The first browser call starts Chrome and keeps it running for later
-invocations. Rebuild after pulling changes; the link always runs the current
-build.
+invocations. Both links point into the checkout, so updating is
+`git pull && npm run build` in `package/ego-browser`.
 
 A bundled extension shows each task space as a tab group: blue with the agent's
 current step while it works, orange when the task is handed to the user. A
