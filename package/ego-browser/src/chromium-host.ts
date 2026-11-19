@@ -13,7 +13,10 @@ import {
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { IDENTITY_DAEMON_SOURCE } from "./browser-identity.js";
+import {
+  IDENTITY_DAEMON_SOURCE,
+  USER_AGENT_OVERRIDE,
+} from "./browser-identity.js";
 
 /**
  * Implements the Ego Lite native bindings (docs/native-bindings-api.md) on a
@@ -134,12 +137,10 @@ export function createChromiumEgo(
   let channel: Promise<WebSocket> | undefined;
 
   const resolveBrowserUrl = () =>
-    (browserUrl ??= connectOrLaunchChrome(env, profileDir).then(
-      async (url) => {
-        await ensureIdentityDaemon(url, profileDir);
-        return url;
-      },
-    ));
+    (browserUrl ??= connectOrLaunchChrome(env, profileDir).then(async (url) => {
+      await ensureIdentityDaemon(url, profileDir);
+      return url;
+    }));
   const hostCdp = () =>
     (host ??= resolveBrowserUrl().then((url) => HostConnection.open(url)));
   let extension: Promise<ExtensionHost> | undefined;
@@ -421,10 +422,11 @@ export function createChromiumEgo(
           .send("Target.activateTarget", { targetId: space.activeTargetId })
           .catch(() => {});
       }
-      const { targetId } = await cdp.send("Target.createTarget", {
+      const targetId = await createTargetWithIdentity(
+        cdp,
         url,
-        ...(firstTab ? { newWindow: true, ...SPACE_WINDOW_SIZE } : {}),
-      });
+        firstTab ? { newWindow: true, ...SPACE_WINDOW_SIZE } : {},
+      );
       const windowId = firstTab ? await windowOf(targetId) : space.windowId;
       const stored = updateSpace(space.id, (item) => {
         item.targets.push(targetId);
@@ -865,6 +867,47 @@ async function ensureIdentityDaemon(url: string, profileDir: string) {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+// createTarget({url}) starts the navigation in the browser process before the
+// identity daemon can attach, so the first request would go out with the stock
+// UA. Open about:blank, wait for the daemon's override, then navigate.
+async function createTargetWithIdentity(
+  cdp: HostConnection,
+  url: string,
+  params: Record<string, unknown>,
+): Promise<string> {
+  const { targetId } = await cdp.send("Target.createTarget", {
+    url: "about:blank",
+    ...params,
+  });
+  const { sessionId } = await cdp.send("Target.attachToTarget", {
+    targetId,
+    flatten: true,
+  });
+  try {
+    const deadline = Date.now() + EXTENSION_READY_TIMEOUT_MS;
+    while (true) {
+      const { result } = await cdp.send(
+        "Runtime.evaluate",
+        { expression: "navigator.userAgent", returnByValue: true },
+        sessionId,
+      );
+      if (result.value === USER_AGENT_OVERRIDE.userAgent) break;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          "ego-browser user-agent override was not applied to the new tab; see identity-daemon.log in the chrome profile",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (url !== "about:blank") {
+      await cdp.send("Page.navigate", { url }, sessionId);
+    }
+  } finally {
+    await cdp.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+  }
+  return targetId;
 }
 
 function readDevToolsUrl(portFile: string): string | undefined {

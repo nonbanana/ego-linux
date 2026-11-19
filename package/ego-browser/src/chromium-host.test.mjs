@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -211,3 +218,76 @@ test("Chrome snapshots join text split across many nodes", () => {
     ].join("\n"),
   );
 });
+
+const chromeAvailable = Boolean(
+  process.env.EGO_BROWSER_CHROME ||
+  (process.env.PATH || "")
+    .split(":")
+    .some((dir) =>
+      ["google-chrome", "google-chrome-stable", "chromium"].some((name) =>
+        existsSync(join(dir, name)),
+      ),
+    ),
+);
+
+test(
+  "tabs opened with a URL send the Mac Edge UA and Client Hints on the first request",
+  { skip: !chromeAvailable, timeout: 60_000 },
+  async () => {
+    const requests = [];
+    const server = createServer((req, res) => {
+      if (req.url === "/favicon.ico") return res.end();
+      requests.push({
+        url: req.url,
+        ua: req.headers["user-agent"],
+        ch: req.headers["sec-ch-ua"],
+      });
+      res.setHeader("content-type", "text/html");
+      res.end("ok");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const dataDir = mkdtempSync(join(tmpdir(), "ego-ua-test-"));
+    const ego = createChromiumEgo({
+      ...process.env,
+      EGO_BROWSER_DATA_DIR: dataDir,
+    });
+    try {
+      const space = await ego.createTaskSpace("ua-first-request");
+      ego.useTaskSpace(space.id);
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      await ego.createTab(`${origin}/first-tab`);
+      await ego.createTab(`${origin}/second-tab`);
+      const deadline = Date.now() + 10_000;
+      while (requests.length < 2 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        assert.match(request.ua, /Macintosh.*Edg\/145/, request.url);
+        assert.match(request.ch, /Microsoft Edge/, request.url);
+      }
+    } finally {
+      ego.close();
+      server.close();
+      await closeChrome(dataDir);
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  },
+);
+
+async function closeChrome(dataDir) {
+  try {
+    const [port, path] = readFileSync(
+      join(dataDir, "chrome-profile", "DevToolsActivePort"),
+      "utf8",
+    ).split("\n");
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`);
+    await new Promise((resolve) => {
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+        resolve();
+      };
+      socket.onerror = resolve;
+    });
+  } catch {}
+}
