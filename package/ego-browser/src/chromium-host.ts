@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  openSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -12,7 +13,7 @@ import {
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { USER_AGENT_OVERRIDE } from "./browser-identity.js";
+import { IDENTITY_DAEMON_SOURCE } from "./browser-identity.js";
 
 /**
  * Implements the Ego Lite native bindings (docs/native-bindings-api.md) on a
@@ -133,7 +134,12 @@ export function createChromiumEgo(
   let channel: Promise<WebSocket> | undefined;
 
   const resolveBrowserUrl = () =>
-    (browserUrl ??= connectOrLaunchChrome(env, profileDir));
+    (browserUrl ??= connectOrLaunchChrome(env, profileDir).then(
+      async (url) => {
+        await ensureIdentityDaemon(url, profileDir);
+        return url;
+      },
+    ));
   const hostCdp = () =>
     (host ??= resolveBrowserUrl().then((url) => HostConnection.open(url)));
   let extension: Promise<ExtensionHost> | undefined;
@@ -231,39 +237,6 @@ export function createChromiumEgo(
     sendQueue = sendQueue.then(task);
   };
   const pendingShots = new Map<number, number>();
-  const pendingAttaches = new Set<number>();
-  const pendingOverrides = new Set<number>();
-  let nextOverrideId = 2 ** 30;
-
-  // Every page session the runtime attaches gets the Mac identity before the
-  // runtime's next command, since sends are queued in order. Returns true for
-  // our own acks, which the runtime must not see.
-  function applyIdentity(data: string): boolean {
-    if (pendingAttaches.size === 0 && pendingOverrides.size === 0) return false;
-    const message = JSON.parse(data);
-    if (pendingOverrides.delete(message.id)) {
-      if (message.error) {
-        ego.onSendCDPMessageError?.(
-          `Emulation.setUserAgentOverride failed: ${message.error.message}`,
-          "EGO_CDP_CHANNEL_UNAVAILABLE",
-        );
-      }
-      return true;
-    }
-    if (!pendingAttaches.delete(message.id) || !message.result?.sessionId) {
-      return false;
-    }
-    const id = nextOverrideId++;
-    pendingOverrides.add(id);
-    const override = JSON.stringify({
-      id,
-      method: "Emulation.setUserAgentOverride",
-      params: USER_AGENT_OVERRIDE,
-      sessionId: message.result.sessionId,
-    });
-    enqueue(async () => (await channel!).send(override));
-    return false;
-  }
 
   // The agent cursor and frame are for the user, not for the agent's own
   // screenshots. A failure here only means the overlay may show in the shot.
@@ -638,13 +611,10 @@ export function createChromiumEgo(
       channel ??= resolveBrowserUrl().then((url) =>
         openRawChannel(url, (data) => {
           if (pendingShots.size > 0) revealAfterShot(data);
-          if (!applyIdentity(data)) ego.onCDPMessage?.(data);
+          ego.onCDPMessage?.(data);
         }),
       );
       const socketReady = channel;
-      if (parsed.method === "Target.attachToTarget") {
-        pendingAttaches.add(parsed.id);
-      }
       const hideForShot =
         parsed.method === "Page.captureScreenshot" &&
         space.windowId !== undefined;
@@ -863,6 +833,38 @@ async function connectOrLaunchChrome(
   throw new Error(
     `${chrome} did not open its DevTools endpoint within ${CHROME_START_TIMEOUT_MS / 1000}s (profile ${profileDir})`,
   );
+}
+
+async function ensureIdentityDaemon(url: string, profileDir: string) {
+  const pidFile = join(profileDir, "identity-daemon.pid");
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (existsSync(pidFile) && alive(Number(readFileSync(pidFile, "utf8")))) {
+    return;
+  }
+  rmSync(pidFile, { force: true });
+  const log = openSync(join(profileDir, "identity-daemon.log"), "w");
+  const child = spawn(
+    process.execPath,
+    ["-e", IDENTITY_DAEMON_SOURCE, url, pidFile],
+    { detached: true, stdio: ["ignore", "ignore", log] },
+  );
+  child.unref();
+  const deadline = Date.now() + EXTENSION_READY_TIMEOUT_MS;
+  while (!existsSync(pidFile)) {
+    if (child.exitCode !== null || Date.now() > deadline) {
+      throw new Error(
+        `ego-browser user-agent daemon did not start; see ${join(profileDir, "identity-daemon.log")}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 function readDevToolsUrl(portFile: string): string | undefined {
