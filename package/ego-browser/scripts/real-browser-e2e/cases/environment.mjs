@@ -36,6 +36,13 @@ export function environmentCase() {
       returnByValue: true,
     });
     assertEqual(runtimeProbe.result.value, 2, "CDP Runtime.evaluate is available");
+    if (process.platform === "linux") {
+      assertEqual(
+        await js("return navigator.userAgent + '|' + navigator.userAgentData.platform"),
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7049.52 Safari/537.36 Edg/145.0.3800.82|macOS",
+        "Linux Chrome host presents the Mac Edge identity",
+      );
+    }
     try {
       const browserVersion = await cdp("Browser.getVersion");
       assert(browserVersion.product || browserVersion.userAgent, "CDP Browser.getVersion returns capability data");
